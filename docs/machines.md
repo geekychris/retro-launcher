@@ -83,13 +83,14 @@ its menu from `DH1:launcher.list`, one `Title|program [arguments]` per line:
 Planet Chomp|DH1:planet_chomp FULLSCREEN
 Rolling Steel|DH1:rolling_steel/rolling_steel FULLSCREEN
 Spectral Keep|DH1:spectral_keep/spectral_keep FULLSCREEN
+Terra Strike|DH1:terra_strike/terra_strike FULLSCREEN
 Void Trader|DH1:void_trader
 Canyon Rescue|DH1:canyon_rescue
 NetSurf|DH1:NetSurf/NetSurf
 ```
 
-Planet Chomp, Rolling Steel and Spectral Keep take `FULLSCREEN` and then open
-a screen of their own. F or F10 switches back to a window while playing.
+Planet Chomp, Rolling Steel, Spectral Keep and Terra Strike take `FULLSCREEN`
+and then open a screen of their own. F or F10 switches back to a window while playing.
 
 **Paths:**
 
@@ -100,6 +101,9 @@ a screen of their own. F or F10 switches back to a window while playing.
 | `os4_dir` | `~/AmigaOS4` (handed to the script as `OS4_DIR`) |
 | `dev_hdf` | `{os4_dir}/amigaos4-dev.hdf`, which OS4 sees as `DH1:` |
 | `xdftool` | amitools' `xdftool` (`pip install amitools`) |
+
+The launcher reads the list when it starts. After changing it, quit the
+launcher and run `DH1:launcher` again (or reboot).
 
 **One-time setup:**
 
