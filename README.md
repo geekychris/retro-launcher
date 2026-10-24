@@ -62,6 +62,12 @@ somewhere else.
 ./build-app.sh              # a stand-alone app: dist/Retro Launcher.app (macOS) or dist/retro-launcher/
 ```
 
+Each machine's development environment also has a start-here script in
+`bin/`: `devbench-amigaos4` (and `-amiga68k`, `-atari`, `-3do`) checks every
+part is installed, starts the emulator and its devbench, and lists the
+addresses to connect to. `retro-start-all` and `retro-stop-all` do every
+machine. See [Start-here scripts](docs/start-here.md).
+
 ## Controls
 
 | Key | Mouse | Gamepad | Does |
@@ -86,6 +92,7 @@ somewhere else.
 | [Configuration](docs/configuration.md) | `config.toml`: every setting, command templates, adding your own machine |
 | [The machines](docs/machines.md) | What each machine boots, how the selector boot is chosen, one-time setup, fullscreen |
 | [How it works](docs/how-it-works.md) | Modules, the launch lifecycle, process detection, window switching on each OS |
+| [Start-here scripts](docs/start-here.md) | `devbench-<machine>`: check, start and connect to one machine's devbench; `retro-start-all`, `retro-stop-all` |
 | [Building and packaging](docs/building.md) | Running from source, stand-alone apps, the icon and doc screenshots |
 | [Troubleshooting](docs/troubleshooting.md) | MISSING and FAILED cards, windows that don't come forward, per-OS notes |
 
