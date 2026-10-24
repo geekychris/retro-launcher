@@ -79,8 +79,8 @@ check_docker() {
     if docker info >/dev/null 2>&1; then ok "Docker running ($(docker version --format '{{.Server.Version}}' 2>/dev/null))"
     else bad "Docker isn't running → retro up docker (Rancher Desktop)"; fi
 }
-binfmt() {  # x86 emulation in the Docker VM, for the 3DO compilers; the VM forgets it when it restarts
-    docker run --privileged --rm tonistiigi/binfmt --install amd64 >>$LOGS/docker.log 2>&1
+binfmt() {  # x86 emulation (64- and 32-bit) in the Docker VM, for the 3DO compilers; the VM forgets it when it restarts
+    docker run --privileged --rm tonistiigi/binfmt --install amd64,386 >>$LOGS/docker.log 2>&1
 }
 up_docker() {
     if ! docker info >/dev/null 2>&1; then
