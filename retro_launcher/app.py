@@ -8,6 +8,7 @@ import random
 import subprocess
 import sys
 import time
+import webbrowser
 
 # macOS: a fullscreen window without a Space of its own, so hiding it while
 # an emulator runs doesn't leave an empty black Space in front of it.
@@ -20,7 +21,8 @@ os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")
 import pygame
 
 from . import config as cfgmod
-from .procs import Launch, Watcher, descendants, focus_pids, kill_pids
+from .procs import (Launch, UrlWatcher, Watcher, copy_text, descendants, focus_pids, kill_pids,
+                    spawn_detached)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets")
@@ -215,6 +217,9 @@ class Settings:
                       lambda v: g.__setitem__("autostart", v), "choice",
                       choices=[""] + cfg.keys(),
                       help="Launch this machine as soon as the launcher opens"),
+                Field("Power Engineer mode", lambda: g.get("engineer_mode", False),
+                      lambda v: (g.__setitem__("engineer_mode", v), self.app.set_engineer(v)), "bool",
+                      help="Show each machine's developer workbenches on the menu (P toggles it)"),
                 Field("Projects folder", lambda: g.get("projects", ""),
                       lambda v: g.__setitem__("projects", v), "text",
                       help="{projects}: the folder holding amiga_mcp, atari_st_games, 3do_dev ...",
@@ -260,6 +265,16 @@ class Settings:
             Field("Working folder", lambda: p.get("cwd", ""), setter("cwd")),
             Field("Running-process match", lambda: p.get("process_match", ""), setter("process_match"),
                   help="Text in a process command line that means this emulator is running"),
+            Field("Workbench URL", lambda: p.setdefault("workbench", {}).get("url", ""),
+                  lambda v: p.setdefault("workbench", {}).__setitem__("url", v),
+                  help="Power Engineer mode: checked to tell whether the workbench is up"),
+            Field("Workbench start", lambda: p.setdefault("workbench", {}).get("start", ""),
+                  lambda v: p.setdefault("workbench", {}).__setitem__("start", v),
+                  help="Command that brings the workbench up (empty: launching the machine does)"),
+            Field("Workbench links", lambda: self.SEP.join(p.setdefault("workbench", {}).get("links", [])),
+                  lambda v: p.setdefault("workbench", {}).__setitem__(
+                      "links", [x.strip() for x in v.split(self.SEP.strip()) if x.strip()]),
+                  help="Label|open|url, Label|copy|text or Label|run|command; separate with ;;"),
             Field("Title", lambda: p.get("title", ""), setter("title")),
             Field("Subtitle", lambda: p.get("subtitle", ""), setter("subtitle")),
             Field("Accent colour", lambda: p.get("accent", ""), setter("accent")),
@@ -626,6 +641,9 @@ class App:
         self.rects = []
         self.stars = [(random.random(), random.random(), random.random()) for _ in range(140)]
         self.watcher = Watcher({})
+        self.health = UrlWatcher()
+        self.engineer = bool(self.cfg.general.get("engineer_mode", False))
+        self.wb_pending = {}        # key -> deadline: open the workbench once it answers
         self.refresh_watcher()
         auto = autostart if autostart is not None else self.cfg.general.get("autostart", "")
         if auto in self.cfg.keys():
@@ -680,6 +698,13 @@ class App:
             pat = self.cfg.platform(k).get("process_match", "")
             pats[k] = self.cfg.expand(k, pat) if pat else ""
         self.watcher.patterns = pats
+        urls = []
+        if self.engineer:
+            for k in self.visible_keys():
+                url, _ = self.cfg.workbench(k)
+                urls += [url] + [t for _, kind, t in self.cfg.workbench_links(k)
+                                 if kind == "open" and t.startswith("http")]
+        self.health.urls = [u for i, u in enumerate(urls) if u and u not in urls[:i]]
         self.backdrops = {}
         self.cards_cache = {}
 
@@ -775,6 +800,79 @@ class App:
         p["boot_to_selector"] = "default" if new == default else ("on" if new else "off")
         self.cfg.save()
         self.say("%s boots into: %s" % (p["title"], self.cfg.label(key, new)))
+
+    # ---- Power Engineer mode ----
+
+    def set_engineer(self, on):
+        self.engineer = bool(on)
+        self.cfg.general["engineer_mode"] = self.engineer
+        self.cfg.save()
+        self.refresh_watcher()
+
+    def toggle_engineer(self):
+        self.set_engineer(not self.engineer)
+        self.say("Power Engineer mode: workbenches shown (O opens one)" if self.engineer
+                 else "Player mode")
+
+    def workbench_up(self, key):
+        url, _ = self.cfg.workbench(key)
+        return self.health.up.get(url) if url else None
+
+    def link_action(self, key, link):
+        label, kind, target = link
+        if kind == "open":
+            webbrowser.open(target)
+            self.say("Opened %s" % label)
+        elif kind == "copy":
+            self.say(("Copied: %s" % target) if copy_text(target) else "Couldn't copy %s" % target, 5)
+        elif kind == "run":
+            log = os.path.join(cfgmod.config_dir(), "logs", key + "-workbench.log")
+            try:
+                spawn_detached(target, self.cfg.general.get("projects") and
+                               os.path.expanduser(self.cfg.general["projects"]), log)
+                self.say("Started %s" % label)
+            except OSError as e:
+                self.say("%s: %s" % (label, e), 6)
+
+    def open_workbench(self, key, idx=0):
+        """Do a workbench link (the first: the main one). If the workbench
+        isn't up yet, start it (or the machine) and do it once it answers."""
+        links = self.cfg.workbench_links(key)
+        title = self.cfg.platform(key)["title"]
+        if not links:
+            self.say("%s has no workbench set (C to configure)" % title)
+            return
+        link = links[min(idx, len(links) - 1)]
+        url, start = self.cfg.workbench(key)
+        needs_up = link[1] in ("open", "run") and url
+        if not needs_up or self.health.up.get(url) or UrlWatcher.answers(url):
+            self.link_action(key, link)
+            return
+        if key in self.wb_pending:
+            self.say("%s workbench is starting…" % title)
+            return
+        if start:
+            log = os.path.join(cfgmod.config_dir(), "logs", key + "-workbench.log")
+            cwd = self.cfg.expand(key, self.cfg.platform(key).get("cwd", "")) or None
+            try:
+                spawn_detached(start, cwd, log)
+            except OSError as e:
+                self.say("Couldn't start the workbench: %s" % e, 6)
+                return
+        else:
+            self.launch(key)
+        self.wb_pending[key] = (time.time() + 240, idx)
+        self.say("Starting the %s workbench… it opens when it's up" % title, 6)
+
+    def poll_workbenches(self):
+        for key, (deadline, idx) in list(self.wb_pending.items()):
+            url, _ = self.cfg.workbench(key)
+            if self.health.up.get(url):
+                del self.wb_pending[key]
+                self.link_action(key, self.cfg.workbench_links(key)[idx])
+            elif time.time() > deadline:
+                del self.wb_pending[key]
+                self.say("%s workbench didn't come up (L for the log)" % self.cfg.platform(key)["title"], 6)
 
     # ---- window hide/show while an emulator runs ----
 
@@ -885,7 +983,19 @@ class App:
             self.stop(key)
         elif k == pygame.K_l and key:
             ln = self.launches[key]
-            self.log_view = ("Log: " + ln.log_path, ln.tail(40) or ["(no log yet)"])
+            lines = ln.tail(40) or ["(no log yet)"]
+            wlog = os.path.join(os.path.dirname(ln.log_path), key + "-workbench.log")
+            if self.engineer and os.path.exists(wlog):
+                with open(wlog, encoding="utf-8", errors="replace") as f:
+                    lines = lines + ["", "-- workbench log: " + wlog] + f.read().splitlines()[-20:]
+            self.log_view = ("Log: " + ln.log_path, lines)
+        elif k == pygame.K_p:
+            self.toggle_engineer()
+        elif k == pygame.K_o and key:
+            if self.engineer:
+                self.open_workbench(key)
+            else:
+                self.say("Press P for Power Engineer mode first")
         elif k == pygame.K_c:
             self.mode = "settings"
         elif k == pygame.K_f:
@@ -949,6 +1059,8 @@ class App:
                     self.sel = idx
                 elif kind == "boot":
                     self.toggle_boot(val)
+                elif kind == "link":
+                    self.open_workbench(val[0], val[1])
                 elif kind == "button":
                     return self.menu_key(pygame.event.Event(pygame.KEYDOWN, key=val, mod=0, unicode=""))
                 return True
@@ -1035,7 +1147,8 @@ class App:
             self.screen.blit(self.cards_cache[gk], (pad + dx, pad + dy))
         self.screen.blit(title, (pad, pad))
         sub = F.get("body", int(24 * u)).render(
-            "Amiga · AmigaOS 4 · Atari · 3DO  —  pick a machine and boot it", True, DIM)
+            "POWER ENGINEER  —  each machine with its developer workbench" if self.engineer else
+            "Amiga · AmigaOS 4 · Atari · 3DO  —  pick a machine and boot it", True, acc if self.engineer else DIM)
         self.screen.blit(sub, (pad + 4, pad + title.get_height()))
         clock = F.get("bold", int(34 * u)).render(time.strftime("%H:%M"), True, DIM)
         self.screen.blit(clock, (W - pad - clock.get_width(), pad + int(10 * u)))
@@ -1046,7 +1159,7 @@ class App:
         rows = math.ceil(n / cols)
         gap = int(34 * u)
         area_top = int(H * 0.20)
-        area_bot = H - int(150 * u)
+        area_bot = H - int((330 if self.engineer else 150) * u)
         cw = (W - 2 * pad - (cols - 1) * gap) / cols
         ch_img = cw * 0.75
         info_h = int(190 * u)
@@ -1067,6 +1180,9 @@ class App:
             cy = y0 + r_ * (ch + gap)
             focus = max(0.0, 1 - abs(self.sel_anim - i))
             self.draw_card(k, cx, cy, cw, ch_img, ch, focus, i == self.sel, t, u)
+        if self.engineer:
+            self.draw_workbench_panel(key, pygame.Rect(pad, area_bot + int(26 * u), W - 2 * pad,
+                                                       H - int(118 * u) - area_bot - int(26 * u)), acc, u)
 
         # footer buttons
         boot = self.cfg.selector_mode(key)
@@ -1075,9 +1191,13 @@ class App:
                 ("B", "Boot: " + ("selector" if boot else "plain"), pygame.K_b),
                 ("S", "Stop", pygame.K_s), ("L", "Log", pygame.K_l),
                 ("C", "Settings", pygame.K_c), ("F", "Fullscreen", pygame.K_f),
+                ("P", "Player" if self.engineer else "Engineer", pygame.K_p),
                 ("ESC", "Quit", pygame.K_ESCAPE)]
         if st == "running":
             btns[0] = ("ENTER", "Switch to it", pygame.K_RETURN)
+        if self.engineer:
+            btns.insert(1, ("O", "Workbench", pygame.K_o))
+            btns = [b for b in btns if b[2] != pygame.K_f]      # room for it: F still works
         bf = F.get("bold", int(20 * u))
         lf = F.get("body", int(22 * u))
         items = []
@@ -1138,6 +1258,17 @@ class App:
             self.screen.blit(veil, (x + inset, y + inset))
         pygame.draw.rect(self.screen, acc if selected else (60, 66, 92), body, 3 if selected else 1,
                          border_radius=rad)
+        if self.engineer:
+            # the workbench's state, on the artwork
+            up = self.workbench_up(key)
+            starting = key in self.wb_pending
+            wf = F.get("bold", int(16 * u))
+            ws = wf.render("WORKBENCH " + ("STARTING" if starting else "UP" if up else "OFF"), True, (10, 12, 20))
+            wr = pygame.Rect(0, 0, ws.get_width() + int(20 * u), ws.get_height() + int(6 * u))
+            wr.bottomleft = (x + inset + int(10 * u), y + inset + ih - int(10 * u))
+            pygame.draw.rect(self.screen, WARN if starting else (OK if up else (150, 156, 176)), wr,
+                             border_radius=wr.h // 2)
+            self.screen.blit(ws, ws.get_rect(center=wr.center))
         self.rects.append((body, ("card", key)))
         # text
         ty = y + h_img + int(14 * u)
@@ -1177,6 +1308,56 @@ class App:
         if pr.bottom < y + h - 4:
             pygame.draw.rect(self.screen, col, pr, border_radius=pr.h // 2)
             self.screen.blit(ps, ps.get_rect(center=pr.center))
+    def draw_workbench_panel(self, key, box, acc, u):
+        """Power Engineer mode: the selected machine's developer workbench."""
+        if box.h < int(60 * u):
+            return
+        F = self.fonts
+        panel = pygame.Surface(box.size, pygame.SRCALPHA)
+        pygame.draw.rect(panel, PANEL + (225,), panel.get_rect(), border_radius=int(16 * u))
+        self.screen.blit(panel, box.topleft)
+        pygame.draw.rect(self.screen, acc, box, 2, border_radius=int(16 * u))
+        x, y = box.x + int(24 * u), box.y + int(14 * u)
+        title = self.cfg.platform(key).get("title", key).upper()
+        hs = F.get("bold", int(26 * u)).render("DEVELOPER WORKBENCH  ·  " + title, True, acc)
+        self.screen.blit(hs, (x, y))
+        url, start = self.cfg.workbench(key)
+        up = self.workbench_up(key)
+        if key in self.wb_pending:
+            state, col = "starting…", WARN
+        elif up:
+            state, col = "up  ·  " + url, OK
+        else:
+            state, col = "not running  ·  O starts it" if (start or url) else "", DIM
+        ss = F.get("body", int(20 * u)).render(state, True, col)
+        self.screen.blit(ss, (box.right - int(24 * u) - ss.get_width(), y + (hs.get_height() - ss.get_height()) // 2))
+        y += hs.get_height() + int(10 * u)
+        rf, mf, tf = F.get("body", int(22 * u)), F.get("mono", int(18 * u)), F.get("bold", int(16 * u))
+        row_h = int(38 * u)
+        tags = {"open": "OPEN", "copy": "COPY", "run": "RUN"}
+        for i, (label, kind, target) in enumerate(self.cfg.workbench_links(key)):
+            if y + row_h > box.bottom - int(8 * u):
+                break
+            row = pygame.Rect(box.x + int(12 * u), y, box.w - int(24 * u), row_h - int(4 * u))
+            if row.collidepoint(pygame.mouse.get_pos()):
+                pygame.draw.rect(self.screen, mix(PANEL, acc, 0.22), row, border_radius=int(8 * u))
+            cy = row.centery
+            dot = self.health.up.get(target) if kind == "open" else (up if kind == "run" else None)
+            dcol = OK if dot else ((110, 118, 142) if dot is False else FAINT)
+            pygame.draw.circle(self.screen, dcol, (row.x + int(16 * u), cy), max(3, int(6 * u)))
+            ls = rf.render(label, True, INK)
+            self.screen.blit(ls, (row.x + int(34 * u), cy - ls.get_height() // 2))
+            tag = tf.render(tags[kind], True, (10, 12, 20))
+            tr = pygame.Rect(0, 0, tag.get_width() + int(20 * u), tag.get_height() + int(6 * u))
+            tr.midright = (row.right - int(10 * u), cy)
+            pygame.draw.rect(self.screen, acc if i == 0 else (200, 206, 222), tr, border_radius=tr.h // 2)
+            self.screen.blit(tag, tag.get_rect(center=tr.center))
+            text = " ".join(target) if isinstance(target, list) else target
+            tx = row.x + int(34 * u) + max(ls.get_width() + int(24 * u), int(380 * u))
+            ts = mf.render(fit_text(mf, text, tr.x - tx - int(16 * u)), True, DIM)
+            self.screen.blit(ts, (tx, cy - ts.get_height() // 2))
+            self.rects.insert(0, (row, ("link", (key, i))))
+            y += row_h
 
     def draw_overlays(self, t):
         W, H = self.screen.get_size()
@@ -1246,6 +1427,8 @@ class App:
                 elif ev.type == pygame.MOUSEWHEEL:
                     self.move(-ev.y)
             self.manage_visibility()
+            if self.wb_pending:
+                self.poll_workbenches()
             if self.hidden:
                 self.clock.tick(4)
                 continue
@@ -1269,4 +1452,5 @@ class App:
                 pygame.image.save(self.screen, snapshot[0])
                 running = False
         self.watcher.stop()
+        self.health.stop()
         pygame.quit()

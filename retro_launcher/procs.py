@@ -284,3 +284,70 @@ class Watcher:
 
     def stop(self):
         self._stop = True
+
+
+class UrlWatcher:
+    """Polls web addresses in the background: which developer workbenches
+    answer. Any HTTP reply counts as up; no connection is down."""
+
+    def __init__(self, urls=(), interval=2.0):
+        self.urls = list(urls)
+        self.up = {}                          # url -> True / False
+        self.interval = interval
+        self._stop = False
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    @staticmethod
+    def answers(url, timeout=0.8):
+        import urllib.error
+        import urllib.request
+        try:
+            urllib.request.urlopen(url, timeout=timeout).close()
+            return True
+        except urllib.error.HTTPError:
+            return True                       # it replied, just not with 200
+        except Exception:
+            return False
+
+    def _loop(self):
+        while not self._stop:
+            self.up = {u: self.answers(u) for u in list(self.urls)}
+            time.sleep(self.interval)
+
+    def stop(self):
+        self._stop = True
+
+
+def spawn_detached(argv, cwd, log_path):
+    """Start a long-running helper (a devbench, a debugger window) on its own,
+    through the user's login shell so it gets their PATH (an app started
+    from the Finder has a minimal one). Its output goes to log_path."""
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    log = open(log_path, "a", encoding="utf-8", errors="replace")
+    log.write("\n== %s  %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), " ".join(argv)))
+    log.flush()
+    if WINDOWS:
+        return subprocess.Popen(argv, cwd=cwd or None, stdout=log, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL,
+                                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+    shell = os.environ.get("SHELL") or "/bin/sh"
+    return subprocess.Popen([shell, "-lc", " ".join(shlex.quote(a) for a in argv)],
+                            cwd=cwd or None, stdout=log, stderr=subprocess.STDOUT,
+                            stdin=subprocess.DEVNULL, start_new_session=True)
+
+
+def copy_text(text):
+    """Put text on the clipboard. True if it worked."""
+    if sys.platform == "darwin":
+        cmds = [["pbcopy"]]
+    elif WINDOWS:
+        cmds = [["clip"]]
+    else:
+        cmds = [["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-ib"]]
+    for c in cmds:
+        try:
+            subprocess.run(c, input=text.encode("utf-8"), check=True, timeout=3)
+            return True
+        except Exception:
+            continue
+    return False
