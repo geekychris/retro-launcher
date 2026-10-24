@@ -56,6 +56,7 @@ while_playing = "background"
 stop_others_on_launch = false
 autostart = ""
 projects = "~/code/claude_world"
+engineer_mode = false
 ```
 
 | Key | Default | |
@@ -66,6 +67,7 @@ projects = "~/code/claude_world"
 | `stop_others_on_launch` | `false` | Starting a machine stops the emulators this launcher started |
 | `autostart` | `""` | A machine key to launch as soon as the menu opens |
 | `projects` | `~/code/claude_world` | `{projects}` in paths: the folder holding the sister projects. The `RETRO_PROJECTS` environment variable changes the default |
+| `engineer_mode` | `false` | Power Engineer mode: the menu also shows each machine's developer workbench. P toggles it |
 
 ## `[platforms.KEY]`
 
@@ -208,6 +210,34 @@ emulator from counting. Examples:
 | 3DO | `{tdo} --bios` | `tdo --bios … run …` (not other `tdo` commands) |
 
 Leave it empty to turn detection off for a machine.
+
+## `[platforms.KEY.workbench]`
+
+What Power Engineer mode shows for a machine: its developer tools.
+
+```toml
+[platforms.3do.workbench]
+url = "http://localhost:3330/"
+start = "{tdo} devbench --port 3330"
+links = [
+    "3DO DevBench web UI|open|http://localhost:3330/",
+    "MCP server for Claude (stdio)|copy|{tdo} mcp",
+]
+```
+
+| Key | |
+|---|---|
+| `url` | Checked every two seconds; any HTTP reply means the workbench is up (the card's **WORKBENCH UP**) |
+| `start` | The command that brings the workbench up, run in the machine's `cwd` through your login shell (so it gets your PATH even when the launcher was started from the Finder). Empty: launching the machine brings it up |
+| `links` | One row each, `"Label|kind|target"`. `open`: open the target in the browser. `copy`: copy it to the clipboard. `run`: run it as a command (its words are expanded like a launch command). The first link is what **O** does |
+
+A row whose workbench is down starts it first (`start`, or the machine
+itself) and acts once `url` answers, giving up after four minutes. The
+output of `start` and `run` commands goes to `logs/<machine>-workbench.log`.
+
+The Atari's debugger GUI runs with `{gui_python}` (default `{python}`): set
+it in `[platforms.atari.paths]` to a Python with Tk, such as Homebrew's
+`python3.12` once `python-tk@3.12` is installed.
 
 ## Adding a machine
 

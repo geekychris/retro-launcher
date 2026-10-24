@@ -35,6 +35,10 @@ driven with a keyboard, a mouse or a gamepad.
   is saved to one TOML file that you can also edit by hand.
 * **Logs every launch.** L shows the output of the last launch. The settings
   screen can preview the exact commands a launch will run.
+* **Power Engineer mode.** P adds each machine's developer workbench to the
+  menu: the AmigaDevBench web UIs and MCP endpoints, the FS-UAE debugger,
+  the QEMU monitor, Hatari's debugger GUI and agent, and the 3DO DevBench.
+  O (or a click) opens one, starting it first if it's down.
 
 ## Quick start
 
@@ -70,6 +74,8 @@ somewhere else.
 | L | | Y | the last launch's log |
 | C | | Start | settings |
 | F | | | launcher fullscreen on/off |
+| P | | | Power Engineer mode on/off |
+| O | click a workbench row | | open the machine's workbench (starting it if it's down) |
 | Esc / Q | | | quit (emulators keep running) |
 
 ## Documentation
@@ -91,6 +97,8 @@ somewhere else.
 | Each card cross-fades through screenshots of that machine's games | The footer follows the selection; a running machine's Enter switches to it |
 | ![Plain boot](docs/images/menu-plain-boot.png) | ![Settings](docs/images/settings-amigaos4.png) |
 | B switches a machine to a plain boot | Settings: every path shows what it expands to, with ✓ or ✗ |
+| ![Power Engineer mode](docs/images/engineer-amigaos4.png) | ![The Atari's workbench](docs/images/engineer-atari.png) |
+| Power Engineer mode (P): every machine's workbench state, and the selected one's tools | Click a row to open, copy or run it; O opens the first |
 | ![The OS4 game launcher](docs/images/machine-amigaos4-launcher.png) | ![The Atari ST launcher](docs/images/machine-atari-launcher.png) |
 | The game selector inside AmigaOS 4.1 | The game selector inside the Atari ST |
 
