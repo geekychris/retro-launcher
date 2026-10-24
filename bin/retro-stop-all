@@ -1,0 +1,4 @@
+#!/bin/zsh
+# SPDX-License-Identifier: MIT
+# Stop every machine, its devbench and the Retro Launcher menu (Docker keeps running). See bin/retro.
+exec "${0:A:h}/retro" down "$@"

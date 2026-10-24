@@ -1,0 +1,300 @@
+#!/bin/zsh
+# SPDX-License-Identifier: MIT
+# retro - start, stop and check the retro machines, their developer workbenches
+# (devbenches) and the Retro Launcher menu. macOS, zsh.
+#
+#   retro here MACHINE [start|stop|restart|check|urls]
+#                              start here: check the parts, start the machine and
+#                              its devbench, list the addresses (the default)
+#   retro up      [MACHINE...] start (everything by default; running ones are left alone)
+#   retro down    [MACHINE...] stop (everything but Docker by default)
+#   retro restart [MACHINE...] stop, then start
+#   retro check   [MACHINE...] test that every part is installed
+#   retro urls    [MACHINE...] the addresses to connect to, and which answer
+#   retro status               what's running
+#
+# MACHINE: amiga68k (68k), amigaos4 (os4), atari, 3do, launcher, docker
+# The devbench-<machine> scripts next to this one are `retro here <machine>`;
+# retro-start-all and retro-stop-all are `retro up` and `retro down`.
+#
+# The projects are found in $RETRO_PROJECTS (default ~/code/claude_world):
+# amiga_mcp, atari_st_games, hatari_augmented (or hatari), 3do_dev, retro-launcher.
+# Logs: ~/retro/logs, plus ~/.amiga-devbench/logs for the Amiga devbenches.
+
+emulate -L zsh
+setopt null_glob extended_glob
+export PATH="$HOME/.rd/bin:$HOME/.venvs/retro/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"
+
+P=${RETRO_PROJECTS:-$HOME/code/claude_world}
+P=${~P}
+AMIGA=$P/amiga_mcp
+ATARI=$P/atari_st_games
+HATARI_ROOT=$P/hatari_augmented; [[ -d $HATARI_ROOT ]] || HATARI_ROOT=$P/hatari
+HATARI=$HATARI_ROOT/build/src/Hatari.app/Contents/MacOS/Hatari
+TDO=$P/3do_dev
+LOGS=$HOME/retro/logs
+RDCTL="/Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin/rdctl"
+MACHINES=(amiga68k amigaos4 atari 3do)
+mkdir -p $LOGS
+
+if [[ -t 1 ]]; then B=$'\e[1m' G=$'\e[32m' R=$'\e[31m' Y=$'\e[33m' D=$'\e[2m' C=$'\e[36m' N=$'\e[0m'
+else B= G= R= Y= D= C= N=; fi
+say()  { print -r -- "$*" }
+ok()   { say "  ${G}✓${N} $*" }
+bad()  { say "  ${R}✗${N} $*"; FAILS=$((FAILS + 1)) }
+warn() { say "  ${Y}!${N} $*" }
+head1(){ say ""; say "${B}${C}$*${N}" }
+answers() { curl -s -m 2 -o /dev/null "$1" }          # anything listening at this URL?
+listens() { nc -z -G 1 ${1%:*} ${1##*:} >/dev/null 2>&1 }   # host:port accepting connections?
+# detach DIR LOG CMD...: run CMD in DIR in its own session, so it outlives this shell and an ssh login
+detach() { local dir=$1 log=$2; shift 2
+    nohup python3 -c 'import os,sys; os.chdir(sys.argv[1]); os.setsid(); os.execvp(sys.argv[2], sys.argv[2:])' "$dir" "$@" >>$log 2>&1 </dev/null &! }
+wait_for() {  # wait_for URL SECONDS LABEL
+    local i
+    for i in {1..$2}; do answers $1 && { ok "$3"; return 0 }; sleep 1; done
+    bad "$3 didn't answer at $1 after $2 s (logs: $LOGS)"; return 1
+}
+# addr LABEL TARGET [NOTE]: one line of `urls`, with a live dot (http URLs and host:port only)
+addr() {
+    local label=$1 target=$2 note=$3 dot=" "
+    if [[ $target == http* ]]; then answers $target && dot="${G}●${N}" || dot="${D}○${N}"
+    elif [[ $target == [0-9a-z.]##:[0-9]## ]]; then listens $target && dot="${G}●${N}" || dot="${D}○${N}"; fi
+    printf "  %s %-22s %s%s\n" "$dot" "$label" "$target" "${note:+  ${D}$note${N}}"
+}
+machine() {  # normalise a machine name
+    case $1 in
+        68k|amiga68k|amiga|classic) print amiga68k ;;
+        os4|amigaos4|ppc)           print amigaos4 ;;
+        atari|st|hatari)            print atari ;;
+        3do|tdo)                    print 3do ;;
+        launcher|menu)              print launcher ;;
+        docker|rancher)             print docker ;;
+        *) say "unknown machine: $1 (amiga68k amigaos4 atari 3do launcher docker)" >&2; return 1 ;;
+    esac
+}
+
+# ---------------------------------------------------------------- Docker
+
+check_docker() {
+    if docker info >/dev/null 2>&1; then ok "Docker running ($(docker version --format '{{.Server.Version}}' 2>/dev/null))"
+    else bad "Docker isn't running → retro up docker (Rancher Desktop)"; fi
+}
+binfmt() {  # x86 emulation in the Docker VM, for the 3DO compilers; the VM forgets it when it restarts
+    docker run --privileged --rm tonistiigi/binfmt --install amd64 >>$LOGS/docker.log 2>&1
+}
+up_docker() {
+    if ! docker info >/dev/null 2>&1; then
+        [[ -x $RDCTL ]] || { bad "Rancher Desktop isn't installed"; return 1 }
+        "$RDCTL" start --container-engine.name=moby --kubernetes.enabled=false \
+            --application.admin-access=false >>$LOGS/docker.log 2>&1
+        local i; for i in {1..60}; do docker info >/dev/null 2>&1 && break; sleep 3; done
+    fi
+    docker info >/dev/null 2>&1 || { bad "Docker didn't start (see $LOGS/docker.log)"; return 1 }
+    binfmt; ok "Docker (Rancher Desktop), with x86 emulation"
+}
+down_docker() { "$RDCTL" shutdown >>$LOGS/docker.log 2>&1; say "  · Docker stopped" }
+urls_docker() { addr "Docker" "$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" }
+
+# ---------------------------------------------------------------- Amigas
+# amiga_mcp's own scripts: start.sh runs a devbench and its emulator, doctor.sh checks the parts.
+
+amiga_check() {  # amiga_check 68k|os4
+    [[ -x $AMIGA/scripts/doctor.sh ]] || { bad "amiga_mcp not found at $AMIGA"; return }
+    local line
+    (cd $AMIGA && scripts/doctor.sh $1 2>&1) | while IFS= read -r line; do
+        case $line in
+            *✗*) FAILS=$((FAILS + 1)); say "$line" ;;
+            *✓*|*!*|"      →"*) say "$line" ;;
+        esac
+    done
+}
+amiga_up() {  # amiga_up 68k|os4 LABEL
+    local out; out=$(cd $AMIGA && scripts/start.sh $1 2>&1)
+    if print -r -- "$out" | grep -q "ready:"; then ok "$2: devbench and emulator up"
+    else bad "$2 didn't come up:"; print -r -- "$out" | tail -5 | sed 's/^/      /'; fi
+}
+check_amiga68k() { amiga_check 68k }
+check_amigaos4() { amiga_check os4 }
+up_amiga68k()    { amiga_up 68k "Classic Amiga" }
+up_amigaos4()    { amiga_up os4 "AmigaOS 4.1" }
+down_amiga68k()  { (cd $AMIGA && scripts/start.sh stop 68k >/dev/null 2>&1); pkill -f "fs-uae.*\.fs-uae"; say "  · Classic Amiga stopped" }
+down_amigaos4()  { (cd $AMIGA && scripts/start.sh stop os4 >/dev/null 2>&1); pkill -f qemu-system-ppc; say "  · AmigaOS 4.1 stopped" }
+urls_amiga68k() {
+    addr "DevBench web UI"     http://localhost:3001/
+    addr "MCP (HTTP)"          http://localhost:3001/mcp "claude mcp add --transport http amiga-68k http://localhost:3001/mcp"
+    addr "FS-UAE debugger"     http://localhost:8765/    "the patched FS-UAE's RPC + web debugger"
+    addr "Bridge (Amiga side)" 127.0.0.1:2345            "FS-UAE serial port, devbench connects to it"
+    addr "Deploy folder"       /Applications/AmiKit.app/Contents/SharedSupport/prefix/drive_c/AmiKit/Dropbox/Dev "= DH2:Dev"
+}
+urls_amigaos4() {
+    addr "DevBench web UI"     http://localhost:3000/
+    addr "MCP (HTTP)"          http://localhost:3000/mcp "claude mcp add --transport http amiga-os4 http://localhost:3000/mcp"
+    addr "QEMU monitor (HMP)"  127.0.0.1:2348            "nc 127.0.0.1 2348"
+    addr "Serial console"      127.0.0.1:2346
+    addr "Bridge (TCP)"        127.0.0.1:2347            "devbench connects to it"
+    addr "GDB (QEMU)"          127.0.0.1:1234            "only with scripts/start-qemu-os4.sh --gdb; then scripts/gdb-os4.sh"
+    addr "Dev disk"            ~/AmigaOS4/amigaos4-dev.hdf "= DH1:, written by scripts/deploy-os4.sh"
+}
+
+# ---------------------------------------------------------------- Atari ST
+
+check_atari() {
+    [[ -x $HATARI ]] && ok "Hatari built: $HATARI" \
+        || bad "Hatari not built → cd $HATARI_ROOT && mkdir -p build && cd build && cmake .. && cmake --build ."
+    if [[ -x $HATARI ]] && strings $HATARI 2>/dev/null | grep -q -- "--agent-port"; then ok "Hatari has the agent API (the hatari_augmented fork)"
+    elif [[ -x $HATARI ]]; then bad "this Hatari has no agent API: build github.com/geekychris/hatari"; fi
+    local tos=($HATARI_ROOT/roms/emutos/emutos-1024k-*/etos1024k.img)
+    (( $#tos )) && ok "EmuTOS ROM: ${tos[1]:t}" || bad "no EmuTOS ROM → $HATARI_ROOT/tools/agent/fetch-emutos.sh"
+    local cc=$(command -v m68k-atari-mintelf-gcc || ls ~/computers/atari-cc/opt/cross-mint/bin/m68k-atari-mintelf-gcc 2>/dev/null)
+    if [[ -n $cc ]] && $cc --version >/dev/null 2>&1; then ok "cross compiler: m68k-atari-mintelf-gcc ($($cc -dumpversion))"
+    elif [[ -n $cc ]]; then bad "m68k-atari-mintelf-gcc doesn't run ($cc) - an Intel build needs Rosetta: softwareupdate --install-rosetta"
+    else bad "no m68k-atari-mintelf-gcc → $HATARI_ROOT/tools/agent/fetch-cross-mint.sh"; fi
+    [[ -f $ATARI/st_launcher/build/drive/LAUNCHER.PRG ]] && ok "games drive built (st_launcher/build/drive)" \
+        || bad "games drive not built → cd $ATARI/st_launcher && python3 make_drive.py"
+    if python3 -c "import tkinter" 2>/dev/null || /opt/homebrew/bin/python3.12 -c "import tkinter" 2>/dev/null; then ok "Tk, for the Hatari debugger GUI"
+    else warn "no Python with Tk: the debugger GUI won't open → brew install python-tk@3.12"; fi
+    if answers http://127.0.0.1:7777/; then ok "port 7777: the Hatari agent (running)"
+    elif listens 127.0.0.1:7777; then bad "port 7777 is taken by something else"
+    else ok "port 7777 free"; fi
+}
+up_atari() {
+    answers http://127.0.0.1:7777/ && { ok "Atari ST already running"; return }
+    [[ -d $ATARI/st_launcher/build/drive ]] || (cd $ATARI/st_launcher && python3 make_drive.py >>$LOGS/atari.log 2>&1)
+    detach $ATARI/st_launcher $LOGS/atari.log python3 make_drive.py --no-build --run --machine ste
+    wait_for http://127.0.0.1:7777/ 40 "Atari ST: Hatari with its agent API"
+}
+down_atari() {
+    curl -s -m 3 -X POST http://127.0.0.1:7777/emu/quit >/dev/null 2>&1
+    sleep 1; pkill -f "make_drive.py --no-build --run"; pkill -f "Hatari.app/Contents/MacOS/Hatari"
+    say "  · Atari ST stopped"
+}
+urls_atari() {
+    local py=python3; python3 -c "import tkinter" 2>/dev/null || py=/opt/homebrew/bin/python3.12
+    addr "Hatari agent API"    http://localhost:7777/    "REST: screen, input, memory, CPU, breakpoints (doc/agent-api.md)"
+    addr "Debugger GUI"        "$py $HATARI_ROOT/tools/agent/hatari_gui.py"
+    addr "Agent CLI"           "python3 $HATARI_ROOT/tools/agent/hatari_agent.py --help"
+    addr "GDB stub"            127.0.0.1:2159            "only when Hatari runs with --gdb-port 2159; gdb -x tools/agent/hatari.gdb"
+    addr "Games drive (C:)"    $ATARI/st_launcher/build/drive
+}
+
+# ---------------------------------------------------------------- 3DO
+
+check_3do() {
+    [[ -x $TDO/3do ]] || { bad "3do_dev not found at $TDO"; return }
+    docker info >/dev/null 2>&1 && binfmt          # the doctor checks x86 emulation; restore it first
+    local line
+    (cd $TDO && ./3do doctor 2>&1) | while IFS= read -r line; do
+        case $line in
+            *"problem(s)"*|"==>"*) ;;
+            *✗*) FAILS=$((FAILS + 1)); say "$line" ;;
+            *✓*|*!*|"    fix:"*) say "$line" ;;
+        esac
+    done
+}
+up_3do() {
+    docker info >/dev/null 2>&1 && binfmt
+    if answers http://127.0.0.1:3330/; then ok "3DO DevBench already running"
+    else detach $TDO $LOGS/3do-devbench.log $TDO/.venv/bin/tdo devbench --port 3330
+         wait_for http://127.0.0.1:3330/ 30 "3DO DevBench"; fi
+    if pgrep -f "tdo --bios .* run" >/dev/null; then ok "3DO game already running"
+    else detach $TDO $LOGS/3do-run.log $TDO/.venv/bin/tdo --bios panafz10.bin run --scale 3 $TDO/projects/arcade/build/arcade.iso
+         sleep 3; pgrep -f "tdo --bios .* run" >/dev/null && ok "3DO: the arcade disc is running" \
+             || bad "the 3DO game didn't start (see $LOGS/3do-run.log)"; fi
+}
+down_3do() { pkill -f "tdo --bios .* run"; pkill -f "tdo devbench"; say "  · 3DO stopped" }
+urls_3do() {
+    addr "3DO DevBench web UI" http://localhost:3330/
+    addr "MCP (HTTP)"          http://localhost:3330/mcp "claude mcp add --transport http 3do http://localhost:3330/mcp"
+    addr "MCP (stdio)"         "$TDO/.venv/bin/tdo mcp" "what $TDO/.mcp.json registers"
+    addr "Game control"        127.0.0.1:7330            "$TDO/.venv/bin/tdo ctl help"
+    addr "GDB (ARM)"           127.0.0.1:2330            "cd $TDO && ./3do gdb <game> --attach"
+}
+
+# ---------------------------------------------------------------- the menu
+
+check_launcher() {
+    [[ -d "/Applications/Retro Launcher.app" ]] && ok "Retro Launcher installed" \
+        || bad "Retro Launcher not installed → cd $P/retro-launcher && ./build-app.sh && cp -R 'dist/Retro Launcher.app' /Applications/"
+}
+up_launcher() {
+    pgrep -f "Retro Launcher.app" >/dev/null && { ok "Retro Launcher already open"; return }
+    open -a "Retro Launcher" && ok "Retro Launcher opened"
+}
+down_launcher() {
+    osascript -e 'quit app "Retro Launcher"' >/dev/null 2>&1; pkill -f "Retro Launcher.app"
+    local i; for i in {1..10}; do pgrep -f "Retro Launcher.app" >/dev/null || break; sleep 0.5; done
+    say "  · Retro Launcher closed"
+}
+urls_launcher() { addr "Settings file" "$HOME/Library/Application Support/RetroLauncher/config.toml" "P in the menu: Power Engineer mode" }
+
+# ---------------------------------------------------------------- commands
+
+typeset -A TITLE
+TITLE=(amiga68k "Classic Amiga · 68k · FS-UAE" amigaos4 "AmigaOS 4.1 · PowerPC · QEMU"
+       atari "Atari ST · Hatari" 3do "3DO · Opera core · tdo" launcher "Retro Launcher" docker "Docker")
+
+status() {
+    row() { printf "  %-16s %-14s %s\n" "$1" "$2" "$3" }
+    st() { eval "$1" >/dev/null 2>&1 && print "${G}up${N}" || print "${D}down${N}" }
+    row Docker          "$(st 'docker info')"                         "Rancher Desktop"
+    row "Classic Amiga" "$(st 'pgrep -f "fs-uae.*\.fs-uae"')"          "devbench $(st 'answers http://127.0.0.1:3001/api/status') http://localhost:3001"
+    row "AmigaOS 4.1"   "$(st 'pgrep -f qemu-system-ppc')"             "devbench $(st 'answers http://127.0.0.1:3000/api/status') http://localhost:3000"
+    row "Atari ST"      "$(st 'pgrep -f Hatari.app/Contents/MacOS')"   "agent    $(st 'answers http://127.0.0.1:7777/') http://localhost:7777"
+    row "3DO"           "$(st 'pgrep -f "tdo --bios .* run"')"         "devbench $(st 'answers http://127.0.0.1:3330/') http://localhost:3330"
+    row "Retro Launcher" "$(st 'pgrep -f "Retro Launcher.app"')"       "the menu"
+}
+
+here() {  # here MACHINE [start|stop|restart|check|urls|status]
+    local m; m=$(machine $1) || return 2
+    case ${2:-start} in
+        start)
+            head1 "${TITLE[$m]}: checking the parts"
+            FAILS=0
+            [[ $m == (amiga68k|amigaos4|3do) ]] && check_docker
+            check_$m
+            (( FAILS )) && warn "$FAILS problem(s) above; starting anyway"
+            head1 "${TITLE[$m]}: starting"
+            [[ $m == (amiga68k|amigaos4|3do) ]] && ! docker info >/dev/null 2>&1 && up_docker
+            up_$m
+            head1 "${TITLE[$m]}: connect to"
+            urls_$m
+            say ""
+            say "${D}stop: ${0:t} stop    restart: ${0:t} restart    check: ${0:t} check    everything: retro status${N}" ;;
+        stop)    down_$m ;;
+        restart) down_$m; sleep 2; up_$m; head1 "connect to"; urls_$m ;;
+        check)   FAILS=0; head1 "${TITLE[$m]}: checking the parts"; check_$m; return $(( FAILS > 0 )) ;;
+        urls)    head1 "${TITLE[$m]}"; urls_$m ;;
+        status)  status ;;
+        *) say "usage: ${0:t} [start|stop|restart|check|urls|status]"; return 2 ;;
+    esac
+}
+
+cmd=${1:-status}; shift 2>/dev/null
+case $cmd in
+    here) here "$@"; exit $? ;;
+    help|-h|--help) sed -n '3,24p' $0 | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+what=()
+for a in "$@"; do what+=($(machine $a)) || exit 2; done
+case $cmd in
+    up|start|start-all)
+        (( $#what )) || what=(docker $MACHINES launcher)
+        for w in $what; do up_$w; done ;;
+    down|stop|stop-all)
+        (( $#what )) || what=(launcher ${(Oa)MACHINES})          # leaves Docker running
+        for w in $what; do down_$w; done ;;
+    restart)
+        (( $#what )) || what=($MACHINES launcher)
+        for w in ${(Oa)what}; do [[ $w == docker ]] || down_$w; done; sleep 2
+        for w in $what; do up_$w; done ;;
+    check)
+        (( $#what )) || what=(docker $MACHINES launcher)
+        FAILS=0
+        for w in $what; do head1 "${TITLE[$w]}"; check_$w; done
+        say ""; (( FAILS )) && { say "${R}$FAILS problem(s)${N}"; exit 1 } || say "${G}everything is installed${N}" ;;
+    urls)
+        (( $#what )) || what=($MACHINES)
+        for w in $what; do head1 "${TITLE[$w]}"; urls_$w; done ;;
+    status) status ;;
+    *) sed -n '3,24p' $0 | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
