@@ -1,0 +1,6 @@
+#!/bin/zsh
+# SPDX-License-Identifier: MIT
+# devbench-atari [start|stop|restart|check|urls|status] - start here for this machine:
+# with no argument it checks every part is installed, starts the emulator and its
+# developer workbench, and lists the addresses to connect to. See bin/retro.
+RETRO_AS=devbench-atari exec "${0:A:h}/retro" here atari "$@"

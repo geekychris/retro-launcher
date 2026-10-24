@@ -1,0 +1,4 @@
+#!/bin/zsh
+# SPDX-License-Identifier: MIT
+# Start every machine, its devbench, Docker and the Retro Launcher menu. See bin/retro.
+exec "${0:A:h}/retro" up "$@"
