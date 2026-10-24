@@ -11,6 +11,13 @@ spaces) and each word is then expanded, so a path with spaces in a
   {helper}      as a whole word: python -m retro_launcher.hooks
   ?fullscreen:  word prefix: keep the word only when the emulator is set to
                 run fullscreen (?windowed: for the opposite)
+
+Each platform also has a [workbench] table for Power Engineer mode: the
+developer tools that go with the machine (its devbench web UI, MCP endpoint,
+debugger). `url` is checked to tell whether the workbench is up, `start` is
+the command that brings it up (empty: launching the machine does), and each
+`links` entry is "Label|kind|target", kind being open (a browser), copy (to
+the clipboard) or run (a command, through your login shell).
 """
 import copy
 import os
@@ -85,6 +92,7 @@ def defaults():
             "stop_others_on_launch": False,
             "autostart": "",
             "projects": PROJECTS,
+            "engineer_mode": False,
         },
         "platforms": {
             "amiga68k": {
@@ -101,6 +109,7 @@ def defaults():
                     "fsuae": _which("fs-uae", "/opt/homebrew/bin/fs-uae", "/usr/local/bin/fs-uae"),
                     "fsuae_config": "~/Documents/FS-UAE/Configurations/AmiKit-Debug.fs-uae",
                     "dev_dir": amikit + "/Dropbox/Dev",
+                    "amiga_mcp": "{projects}/amiga_mcp",
                 },
                 "selector_command": "{fsuae} {fsuae_config} ?fullscreen:--fullscreen=1",
                 "plain_command": "{fsuae} {fsuae_config} ?fullscreen:--fullscreen=1",
@@ -109,6 +118,15 @@ def defaults():
                 "env": {},
                 "env_fullscreen": {},
                 "process_match": "{fsuae}",
+                "workbench": {
+                    "url": "http://localhost:3001/",
+                    "start": "{amiga_mcp}/scripts/start.sh 68k",
+                    "links": [
+                        "DevBench web UI|open|http://localhost:3001/",
+                        "MCP endpoint for Claude|copy|http://localhost:3001/mcp",
+                        "FS-UAE debugger (patched build)|open|http://localhost:8765/",
+                    ],
+                },
             },
             "amigaos4": {
                 "enabled": True,
@@ -134,6 +152,15 @@ def defaults():
                 "env": {"OS4_DIR": "{os4_dir}"},
                 "env_fullscreen": {"DISPLAY_ARG": qemu_display},
                 "process_match": "qemu-system-ppc",
+                "workbench": {
+                    "url": "http://localhost:3000/",
+                    "start": "{amiga_mcp}/scripts/start.sh os4",
+                    "links": [
+                        "DevBench web UI|open|http://localhost:3000/",
+                        "MCP endpoint for Claude|copy|http://localhost:3000/mcp",
+                        "QEMU monitor (HMP)|copy|nc 127.0.0.1 2348",
+                    ],
+                },
             },
             "atari": {
                 "enabled": True,
@@ -152,6 +179,7 @@ def defaults():
                     "tos": "{hatari_root}/roms/emutos/emutos-1024k-1.4/etos1024k.img",
                     "drive": "{atari_root}/st_launcher/build/drive",
                     "machine": "ste",
+                    "gui_python": "{python}",
                 },
                 "selector_command": "{python} {atari_root}/st_launcher/make_drive.py --no-build --run "
                                     "--machine {machine} ?fullscreen:--hatari-arg=--fullscreen",
@@ -164,6 +192,14 @@ def defaults():
                 "env": {"HATARI": "{hatari}"},
                 "env_fullscreen": {},
                 "process_match": "{hatari}",
+                "workbench": {
+                    "url": "http://localhost:7777/",
+                    "start": "",
+                    "links": [
+                        "Hatari debugger GUI|run|{gui_python} {hatari_root}/tools/agent/hatari_gui.py",
+                        "Agent API (JSON)|open|http://localhost:7777/",
+                    ],
+                },
             },
             "3do": {
                 "enabled": True,
@@ -190,6 +226,14 @@ def defaults():
                 "env": {},
                 "env_fullscreen": {},
                 "process_match": "{tdo} --bios",
+                "workbench": {
+                    "url": "http://localhost:3330/",
+                    "start": "{tdo} devbench --port 3330",
+                    "links": [
+                        "3DO DevBench web UI|open|http://localhost:3330/",
+                        "MCP server for Claude (stdio)|copy|{tdo} mcp",
+                    ],
+                },
             },
         },
     }
@@ -207,14 +251,20 @@ while_playing       "background": this menu stays open behind the emulator;
 autostart           a platform key (amiga68k, amigaos4, atari, 3do) to
                     launch as soon as the launcher opens; "" for none
 projects            folder holding amiga_mcp, atari_st_games, ...
-                    ({projects} in the paths below)""",
+                    ({projects} in the paths below)
+engineer_mode       Power Engineer mode: the menu also shows each machine's
+                    developer workbenches (P toggles it)""",
     "platforms.amiga68k": """Command words: {name} = a [paths] entry, {helper} = python -m
 retro_launcher.hooks, ?fullscreen:WORD = WORD only when
 emulator_fullscreen is on (?windowed: the opposite).
 boot_to_selector: "default" (follow [general]), "on" or "off".
 prepare_*: commands run, in order, before the emulator starts.
 process_match: text in a running process's command line that means
-this emulator is already running.""",
+this emulator is already running.
+[workbench]: Power Engineer mode. url = checked to see whether it's up;
+start = command that brings it up ("" = launching the machine does);
+links = "Label|kind|target", kind open (browser), copy (clipboard) or
+run (a command, through your login shell).""",
 }
 
 
@@ -360,4 +410,28 @@ class Config:
             if not os.path.isabs(path) and cwd:
                 path = os.path.join(cwd, path)
             out.append((name, val, os.path.exists(path)))
+        return out
+
+    # ---- Power Engineer mode ----
+
+    def workbench(self, key):
+        """(health url, start argv or None) for a platform's developer workbench."""
+        wb = self.platform(key).get("workbench", {}) or {}
+        url = self.expand(key, str(wb.get("url", "")))
+        start = str(wb.get("start", "")).strip()
+        return url, (self.argv(key, start, False) if start else None)
+
+    def workbench_links(self, key):
+        """[(label, kind, target)] with the target expanded; kind is open, copy or run.
+        A run target comes back as an argument list."""
+        out = []
+        for entry in (self.platform(key).get("workbench", {}) or {}).get("links", []):
+            parts = [x.strip() for x in str(entry).split("|", 2)]
+            if len(parts) != 3 or parts[1] not in ("open", "copy", "run"):
+                continue
+            label, kind, target = parts
+            if kind == "run":
+                out.append((label, kind, self.argv(key, target, False)))
+            else:
+                out.append((label, kind, " ".join(self.expand(key, w) for w in target.split(" "))))
         return out

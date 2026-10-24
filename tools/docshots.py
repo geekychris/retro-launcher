@@ -19,7 +19,7 @@ import pygame  # noqa: E402
 
 from retro_launcher import app as appmod  # noqa: E402
 from retro_launcher import config as cfgmod  # noqa: E402
-from retro_launcher.procs import find_processes  # noqa: E402
+from retro_launcher.procs import UrlWatcher, find_processes  # noqa: E402
 
 cfgmod.Config.save = lambda self: None      # screenshots must not change the config
 
@@ -44,11 +44,22 @@ def shot(cfg_path, size, name, setup, frames=150):
     except SystemExit:
         pass
     a.watcher.stop()
+    a.health.stop()
     print("wrote", os.path.relpath(path, ROOT))
 
 
 def select(key):
     def setup(app):
+        app.sel = app.visible_keys().index(key)
+    return setup
+
+
+def engineer(key):
+    """Power Engineer mode on `key`, with the workbenches' live up/down states."""
+    def setup(app):
+        app.engineer = True
+        app.refresh_watcher()
+        app.health.up = {u: UrlWatcher.answers(u) for u in app.health.urls}
         app.sel = app.visible_keys().index(key)
     return setup
 
@@ -94,6 +105,9 @@ def main():
         ln = app.launches["3do"]
         app.log_view = ("Log: " + ln.log_path, ln.tail(40) or ["(no log yet)"])
     shot(cfg_path, size, "menu-log", log)
+
+    for k in keys:
+        shot(cfg_path, size, "engineer-" + k, engineer(k))
 
     shot(cfg_path, size, "settings-general", settings("general", 2))
     for k in keys:

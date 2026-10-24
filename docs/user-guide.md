@@ -141,6 +141,37 @@ output to a log per machine:
 
 **L** shows the last 40 lines. Any key closes it.
 
+## Power Engineer mode
+
+![Power Engineer mode on the Atari ST](images/engineer-atari.png)
+
+Press **P** to switch the menu into Power Engineer mode, and **P** again to
+go back to the player's menu. The choice is saved. Each card then shows
+whether that machine's developer workbench is up (**WORKBENCH UP**, **OFF**
+or **STARTING**). Under the cards, a panel lists the selected machine's tools:
+
+| Machine | Workbench |
+|---|---|
+| Classic Amiga | The AmigaDevBench web UI and its MCP endpoint (`localhost:3001`), and the patched FS-UAE's debugger page (`localhost:8765`) |
+| AmigaOS 4.1 | The AmigaDevBench web UI and MCP endpoint (`localhost:3000`), and the QEMU monitor (`nc 127.0.0.1 2348`) |
+| Atari ST | Hatari's debugger GUI (`tools/agent/hatari_gui.py`) and the Hatari agent API (`localhost:7777`) |
+| 3DO | The 3DO DevBench web UI (`localhost:3330`) and its MCP server (`tdo mcp`) |
+
+Each row is tagged with what clicking it does: **OPEN** opens it in your
+browser, **COPY** puts it on the clipboard (for an MCP address or a shell
+command), and **RUN** starts it. A green dot means that address answers. **O**
+does the first row, the machine's main workbench.
+
+If the workbench isn't running, O (or a click) starts it first and opens it
+once it answers: an Amiga devbench comes up with its emulator
+(`amiga_mcp/scripts/start.sh 68k` or `os4`), the 3DO DevBench with
+`tdo devbench`, and the Atari's agent with the machine itself. The card says
+**WORKBENCH STARTING** until then, and **L** shows the workbench's log below
+the machine's. What each machine lists, and how it starts, is in its
+`[workbench]` settings (see [Configuration](configuration.md#platformskeyworkbench)).
+
+![Power Engineer mode on AmigaOS 4.1](images/engineer-amigaos4.png)
+
 ## The settings screen
 
 Press **C** (or **Start** on a gamepad). Up/Down chooses a row, Left/Right or
@@ -159,6 +190,7 @@ away.
 | While playing | `background` or `hide` (see above) |
 | Stop others on launch | Starting a machine stops the others this launcher started |
 | Autostart machine | Launch this machine as soon as the menu opens |
+| Power Engineer mode | Show each machine's developer workbench on the menu (P toggles it too) |
 | Projects folder | `{projects}`: the folder holding the sister projects. Marked ✗ if it doesn't exist |
 | Open config file in editor | Opens `config.toml` in the system's editor |
 | Reset everything to defaults | Press Enter twice |
@@ -216,6 +248,8 @@ After you save a path, its ✓ / ✗ shows whether the new value exists.
 | L | | Y | the last launch's log |
 | C | | Start / Back | settings |
 | F | | | launcher fullscreen on/off |
+| P | | | Power Engineer mode on/off |
+| O | click a workbench row | | (Power Engineer mode) open the workbench, starting it if it's down |
 | Esc / Q | | | quit (emulators keep running) |
 
 In the settings, the gamepad's stick and d-pad move between rows and tabs,
