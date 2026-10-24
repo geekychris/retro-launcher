@@ -173,7 +173,7 @@ urls_atari() {
     addr "Hatari agent API"    http://localhost:7777/    "REST: screen, input, memory, CPU, breakpoints (doc/agent-api.md)"
     addr "Debugger GUI"        "$py $HATARI_ROOT/tools/agent/hatari_gui.py"
     addr "Agent CLI"           "python3 $HATARI_ROOT/tools/agent/hatari_agent.py --help"
-    addr "GDB stub"            127.0.0.1:2159            "only when Hatari runs with --gdb-port 2159; gdb -x tools/agent/hatari.gdb"
+    addr "GDB stub"            127.0.0.1:2159            "gdb -x $HATARI_ROOT/tools/agent/hatari.gdb"
     addr "Games drive (C:)"    $ATARI/st_launcher/build/drive
 }
 
@@ -259,7 +259,8 @@ here() {  # here MACHINE [start|stop|restart|check|urls|status]
             head1 "${TITLE[$m]}: connect to"
             urls_$m
             say ""
-            say "${D}stop: ${0:t} stop    restart: ${0:t} restart    check: ${0:t} check    everything: retro status${N}" ;;
+            local me=${RETRO_AS:-retro here $m}
+            say "${D}$me stop · $me restart · $me check · $me urls   (all machines: retro status, retro-stop-all)${N}" ;;
         stop)    down_$m ;;
         restart) down_$m; sleep 2; up_$m; head1 "connect to"; urls_$m ;;
         check)   FAILS=0; head1 "${TITLE[$m]}: checking the parts"; check_$m; return $(( FAILS > 0 )) ;;
