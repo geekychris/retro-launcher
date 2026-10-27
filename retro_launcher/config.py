@@ -63,7 +63,7 @@ def default_config_path():
 def _which(name, *candidates):
     for c in candidates:
         if c and os.path.exists(os.path.expanduser(c)):
-            return c
+            return os.path.expanduser(c)
     return shutil.which(name) or name
 
 
@@ -106,7 +106,8 @@ def defaults():
                 "boot_to_selector": "default",
                 "cwd": "",
                 "paths": {
-                    "fsuae": _which("fs-uae", "/opt/homebrew/bin/fs-uae", "/usr/local/bin/fs-uae"),
+                    "fsuae": _which("fs-uae", "~/.amiga-devbench/fs-uae",  # amiga_mcp's patched build
+                                    "/opt/homebrew/bin/fs-uae", "/usr/local/bin/fs-uae"),
                     "fsuae_config": "~/Documents/FS-UAE/Configurations/AmiKit-Debug.fs-uae",
                     "dev_dir": amikit + "/Dropbox/Dev",
                     "amiga_mcp": "{projects}/amiga_mcp",

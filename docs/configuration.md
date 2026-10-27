@@ -46,6 +46,30 @@ tab) put the defaults back.
 A file that doesn't parse doesn't stop the launcher. It starts with the
 defaults, and the settings screen shows the error.
 
+### On Linux
+
+The defaults for the classic Amiga assume AmiKit as a macOS app. Elsewhere,
+point `dev_dir` at the AmiKit folder the FS-UAE config mounts as `DH2:`. If
+a devbench runs on another port (`PORT_OS4` / `PORT_68K` in amiga_mcp's
+`start.sh`, e.g. because something else holds :3000), change its workbench
+too. For example:
+
+```toml
+[platforms.amiga68k.paths]
+dev_dir = "/home/me/amiga/AmiKit/Dropbox/Dev"
+
+[platforms.amigaos4.workbench]
+url = "http://localhost:3002/"
+start = "env PORT_OS4=3002 {amiga_mcp}/scripts/start.sh os4"
+links = [
+    "DevBench web UI|open|http://localhost:3002/",
+    "MCP endpoint for Claude|copy|http://localhost:3002/mcp",
+]
+```
+
+`fsuae` defaults to amiga_mcp's patched build (`~/.amiga-devbench/fs-uae`)
+when it's installed, else `fs-uae` on the PATH.
+
 ## `[general]`
 
 ```toml
